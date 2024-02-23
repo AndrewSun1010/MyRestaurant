@@ -22,8 +22,8 @@ sky:
     database: 10
 
   wechat:
-    appid: wxda809f303ca8af8d
-    secret: cc6317e58332b63b6078444f16c5867d
+    appid:
+    secret:
 
     mchid: 1561414331
     mchSerialNo: 4B3B3DC35414AD50B1B755BAF8DE9CC7CF407606
