@@ -90,6 +90,54 @@ sky-take-out -> sky-server -> SkyApplication
 
 **具体使用**：
 
+1.负载均衡配置后端服务器组
+
+```nginx
+	upstream webservers{
+	  server 127.0.0.1:8080 weight=90 ;
+	  #server 127.0.0.1:8088 weight=10 ;
+	}
+```
+
+2.反向代理
+
+前端监听localhost的80端口，若前端浏览器访问http://localhost:80/.., 则自动根据后缀跳转（使用http）
+
+```nginx
+    server {
+        listen       80;
+        server_name  localhost;
+
+        #charset koi8-r;
+
+        #access_log  logs/host.access.log  main;
+
+        location / {
+            root   html/sky;
+            index  index.html index.htm;
+        }
+
+        #error_page  404              /404.html;
+
+        # redirect server error pages to the static page /50x.html
+        #
+        error_page   500 502 503 504  /50x.html;
+        location = /50x.html {
+            root   html;
+        }
+
+        # 反向代理,处理管理端发送的请求
+        location /api/ {
+			proxy_pass   http://localhost:8080/admin/;
+            #proxy_pass   http://webservers/admin/;
+        }
+		
+		# 反向代理,处理用户端发送的请求
+        location /user/ {
+            proxy_pass   http://webservers/user/;
+        }
+```
+
 
 
 
@@ -225,4 +273,179 @@ public class WebMvcConfiguration extends WebMvcConfigurationSupport {
     }
 
 ```
+
+#### 6.怎么使用的Redis？
+
+使用**Spring Data Redis**：集成在Spring中，对Redis底层开发进行了高度封装
+
+**步骤一：导入Spring Data Redis的Maven坐标**
+
+```xml
+<dependency>
+     <groupId>org.springframework.boot</groupId>
+     <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+```
+
+**步骤二：配置Redis数据源**
+
+在application-dev.yml中添加
+
+```yaml
+sky:
+  redis:
+    host: localhost
+    port: 6379
+    password: 123456
+    database: 10
+```
+
+在application.yml中添加
+
+```yaml
+spring:
+  profiles:
+    active: dev
+  redis:
+    host: ${sky.redis.host}
+    port: ${sky.redis.port}
+    password: ${sky.redis.password}
+    database: ${sky.redis.database}
+```
+
+**步骤三：通过RedisTemplate对象操作Redis**
+
+编写配置类，创建RedisTemplate对象
+
+```java
+package com.sky.config;
+
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
+
+@Configuration
+@Slf4j
+public class RedisConfiguration {
+
+    @Bean
+    public RedisTemplate redisTemplate(RedisConnectionFactory redisConnectionFactory){
+        log.info("开始创建redis模板对象...");
+        RedisTemplate redisTemplate = new RedisTemplate();
+        //设置redis的连接工厂对象
+        redisTemplate.setConnectionFactory(redisConnectionFactory);
+        //设置redis key的序列化器
+        redisTemplate.setKeySerializer(new StringRedisSerializer());
+        return redisTemplate;
+    }
+}
+```
+
+```java
+package com.sky.test;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.*;
+
+@SpringBootTest
+public class SpringDataRedisTest {
+    @Autowired
+    private RedisTemplate redisTemplate;
+
+    @Test
+    public void testRedisTemplate(){
+        System.out.println(redisTemplate);
+        //string数据操作
+        ValueOperations valueOperations = redisTemplate.opsForValue();
+        //hash类型的数据操作
+        HashOperations hashOperations = redisTemplate.opsForHash();
+        //list类型的数据操作
+        ListOperations listOperations = redisTemplate.opsForList();
+        //set类型数据操作
+        SetOperations setOperations = redisTemplate.opsForSet();
+        //zset类型数据操作
+        ZSetOperations zSetOperations = redisTemplate.opsForZSet();
+    }
+}
+```
+
+**使用Redis快速设置和获取店铺营业状态**
+
+设置营业状态：
+
+```java
+@RestController("adminShopController")
+@RequestMapping("/admin/shop")
+@Api(tags = "店铺相关接口")
+@Slf4j
+public class ShopController {
+
+    public static final String KEY = "SHOP_STATUS";
+
+    @Autowired
+    private RedisTemplate redisTemplate;
+
+    /**
+     * 设置店铺的营业状态
+     * @param status
+     * @return
+     */
+    @PutMapping("/{status}")
+    @ApiOperation("设置店铺的营业状态")
+    public Result setStatus(@PathVariable Integer status){
+        log.info("设置店铺的营业状态为：{}",status == 1 ? "营业中" : "打烊中");
+        redisTemplate.opsForValue().set(KEY,status);
+        return Result.success();
+    }
+}
+```
+
+查询营业状态：
+
+```java
+	/**
+     * 获取店铺的营业状态
+     * @return
+     */
+    @GetMapping("/status")
+    @ApiOperation("获取店铺的营业状态")
+    public Result<Integer> getStatus(){
+        Integer status = (Integer) redisTemplate.opsForValue().get(KEY);
+        log.info("获取到店铺的营业状态为：{}",status == 1 ? "营业中" : "打烊中");
+        return Result.success(status);
+    }
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
