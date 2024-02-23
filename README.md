@@ -138,7 +138,7 @@ sky-take-out -> sky-server -> SkyApplication
         }
 ```
 
-
+![](image/Snipaste_2024-02-23_23-34-15.png)
 
 
 
@@ -421,25 +421,478 @@ public class ShopController {
     }
 ```
 
+**使用redis缓存菜品**
+
+**清除缓存方法：**
+
+```java
+	@Autowired
+    private RedisTemplate redisTemplate;
+	/**
+     * 清理缓存数据
+     * @param pattern
+     */
+    private void cleanCache(String pattern){
+        Set keys = redisTemplate.keys(pattern);
+        redisTemplate.delete(keys);
+    }
+```
+
+在新增菜品，删除菜品，修改菜品时会先删数据库，后删除redis缓存，**来保证数据一致性**
+
+**查询菜品中会将菜品添入Redis缓存**
+
+```java
+		@Autowired
+    private RedisTemplate redisTemplate;
+	/**
+     * 根据分类id查询菜品
+     *
+     * @param categoryId
+     * @return
+     */
+    @GetMapping("/list")
+    @ApiOperation("根据分类id查询菜品")
+    public Result<List<DishVO>> list(Long categoryId) {
+
+        //构造redis中的key，规则：dish_分类id
+        String key = "dish_" + categoryId;
+
+        //查询redis中是否存在菜品数据
+        List<DishVO> list = (List<DishVO>) redisTemplate.opsForValue().get(key);
+        if(list != null && list.size() > 0){
+            //如果存在，直接返回，无须查询数据库
+            return Result.success(list);
+        }
+		////////////////////////////////////////////////////////
+        Dish dish = new Dish();
+        dish.setCategoryId(categoryId);
+        dish.setStatus(StatusConstant.ENABLE);//查询起售中的菜品
+
+        //如果不存在，查询数据库，将查询到的数据放入redis中
+        list = dishService.listWithFlavor(dish);
+        ////////////////////////////////////////////////////////
+        redisTemplate.opsForValue().set(key, list);
+
+        return Result.success(list);
+    }
 
 
 
 
+/**
+     * 新增菜品
+     *
+     * @param dishDTO
+     * @return
+     */
+    @PostMapping
+    @ApiOperation("新增菜品")
+    public Result save(@RequestBody DishDTO dishDTO) {
+        log.info("新增菜品：{}", dishDTO);
+        dishService.saveWithFlavor(dishDTO);
 
+        //清理缓存数据
+        String key = "dish_" + dishDTO.getCategoryId();
+        cleanCache(key);
+        return Result.success();
+    }
+    
+    	/**
+     * 菜品批量删除
+     *
+     * @param ids
+     * @return
+     */
+    @DeleteMapping
+    @ApiOperation("菜品批量删除")
+    public Result delete(@RequestParam List<Long> ids) {
+        log.info("菜品批量删除：{}", ids);
+        dishService.deleteBatch(ids);
 
+        //将所有的菜品缓存数据清理掉，所有以dish_开头的key
+        cleanCache("dish_*");
 
+        return Result.success();
+    }
+    
+    	/**
+     * 修改菜品
+     *
+     * @param dishDTO
+     * @return
+     */
+    @PutMapping
+    @ApiOperation("修改菜品")
+    public Result update(@RequestBody DishDTO dishDTO) {
+        log.info("修改菜品：{}", dishDTO);
+        dishService.updateWithFlavor(dishDTO);
 
+        //将所有的菜品缓存数据清理掉，所有以dish_开头的key
+        cleanCache("dish_*");
 
+        return Result.success();
+    }
+    
+    	/**
+     * 菜品起售停售
+     *
+     * @param status
+     * @param id
+     * @return
+     */
+    @PostMapping("/status/{status}")
+    @ApiOperation("菜品起售停售")
+    public Result<String> startOrStop(@PathVariable Integer status, Long id) {
+        dishService.startOrStop(status, id);
 
+        //将所有的菜品缓存数据清理掉，所有以dish_开头的key
+        cleanCache("dish_*");
 
+        return Result.success();
+    }
+```
 
+#### 7.SpringTask定时任务
 
+步骤一：导入maven坐标
 
+步骤二
 
+#### 8.阿里云OSS
 
+步骤一：导入阿里云Maven坐标
 
+```xml
+<dependency>
+    <groupId>com.aliyun.oss</groupId>
+    <artifactId>aliyun-sdk-oss</artifactId>
+    <version>${aliyun.sdk.oss}</version>
+</dependency>
+```
 
+步骤二：定义OSS相关配置
 
+```yaml
+sky:
+  alioss:
+    endpoint: oss-cn-hangzhou.aliyuncs.com
+    access-key-id: LTAI5tPeFLzsPPT8g*****
+    access-key-secret: U6k1brOZ8gaOIX*****
+    bucket-name: sky-take-out
+```
+
+步骤三：读取OSS配置
+
+```java
+package com.sky.properties;
+
+import lombok.Data;
+import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.stereotype.Component;
+
+@Component
+@ConfigurationProperties(prefix = "sky.alioss")
+@Data
+public class AliOssProperties {
+
+    private String endpoint;
+    private String accessKeyId;
+    private String accessKeySecret;
+    private String bucketName;
+
+}
+```
+
+步骤四：生成OSS工具类对象
+
+```java
+package com.sky.config;
+
+import com.sky.properties.AliOssProperties;
+import com.sky.utils.AliOssUtil;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * 配置类，用于创建AliOssUtil对象
+ */
+@Configuration
+@Slf4j
+public class OssConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean
+    public AliOssUtil aliOssUtil(AliOssProperties aliOssProperties){
+        log.info("开始创建阿里云文件上传工具类对象：{}",aliOssProperties);
+        return new AliOssUtil(aliOssProperties.getEndpoint(),
+                aliOssProperties.getAccessKeyId(),
+                aliOssProperties.getAccessKeySecret(),
+                aliOssProperties.getBucketName());
+    }
+}
+```
+
+步骤五：定义AlisOssUtil
+
+```java
+package com.sky.utils;
+
+import com.aliyun.oss.ClientException;
+import com.aliyun.oss.OSS;
+import com.aliyun.oss.OSSClientBuilder;
+import com.aliyun.oss.OSSException;
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
+import java.io.ByteArrayInputStream;
+
+@Data
+@AllArgsConstructor
+@Slf4j
+public class AliOssUtil {
+
+    private String endpoint;
+    private String accessKeyId;
+    private String accessKeySecret;
+    private String bucketName;
+
+    /**
+     * 文件上传
+     *
+     * @param bytes
+     * @param objectName
+     * @return
+     */
+    public String upload(byte[] bytes, String objectName) {
+
+        // 创建OSSClient实例。
+        OSS ossClient = new OSSClientBuilder().build(endpoint, accessKeyId, accessKeySecret);
+
+        try {
+            // 创建PutObject请求。
+            ossClient.putObject(bucketName, objectName, new ByteArrayInputStream(bytes));
+        } catch (OSSException oe) {
+            System.out.println("Caught an OSSException, which means your request made it to OSS, "
+                    + "but was rejected with an error response for some reason.");
+            System.out.println("Error Message:" + oe.getErrorMessage());
+            System.out.println("Error Code:" + oe.getErrorCode());
+            System.out.println("Request ID:" + oe.getRequestId());
+            System.out.println("Host ID:" + oe.getHostId());
+        } catch (ClientException ce) {
+            System.out.println("Caught an ClientException, which means the client encountered "
+                    + "a serious internal problem while trying to communicate with OSS, "
+                    + "such as not being able to access the network.");
+            System.out.println("Error Message:" + ce.getMessage());
+        } finally {
+            if (ossClient != null) {
+                ossClient.shutdown();
+            }
+        }
+
+        //文件访问路径规则 https://BucketName.Endpoint/ObjectName
+        StringBuilder stringBuilder = new StringBuilder("https://");
+        stringBuilder
+                .append(bucketName)
+                .append(".")
+                .append(endpoint)
+                .append("/")
+                .append(objectName);
+
+        log.info("文件上传到:{}", stringBuilder.toString());
+
+        return stringBuilder.toString();
+    }
+}
+```
+
+步骤六：定义文件上传接口
+
+```java
+package com.sky.controller.admin;
+
+import com.sky.constant.MessageConstant;
+import com.sky.result.Result;
+import com.sky.utils.AliOssUtil;
+import io.swagger.annotations.Api;
+import io.swagger.annotations.ApiOperation;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
+import java.io.IOException;
+import java.util.UUID;
+
+/**
+ * 通用接口
+ */
+@RestController
+@RequestMapping("/admin/common")
+@Api(tags = "通用接口")
+@Slf4j
+public class CommonController {
+
+    @Autowired
+    private AliOssUtil aliOssUtil;
+
+    /**
+     * 文件上传
+     * @param file
+     * @return
+     */
+    @PostMapping("/upload")
+    @ApiOperation("文件上传")
+    public Result<String> upload(MultipartFile file){
+        log.info("文件上传：{}",file);
+
+        try {
+            //原始文件名
+            String originalFilename = file.getOriginalFilename();
+            //截取原始文件名的后缀   dfdfdf.png
+            String extension = originalFilename.substring(originalFilename.lastIndexOf("."));
+            //构造新文件名称
+            String objectName = UUID.randomUUID().toString() + extension;
+
+            //文件的请求路径
+            String filePath = aliOssUtil.upload(file.getBytes(), objectName);
+            return Result.success(filePath);
+        } catch (IOException e) {
+            log.error("文件上传失败：{}", e);
+        }
+
+        return Result.error(MessageConstant.UPLOAD_FAILED);
+    }
+}
+```
+
+#### 9.使用WebSocket实现来单提醒
+
+步骤一：导入websocket
+
+```xml
+<dependency>
+	<groupId>org.springframework.boot</groupId>
+	<artifactId>spring-boot-starter-websocket</artifactId>
+</dependency>
+```
+
+步骤二：定义WebSocket服务端组件
+
+```java
+package com.sky.websocket;
+
+import org.springframework.stereotype.Component;
+import javax.websocket.OnClose;
+import javax.websocket.OnMessage;
+import javax.websocket.OnOpen;
+import javax.websocket.Session;
+import javax.websocket.server.PathParam;
+import javax.websocket.server.ServerEndpoint;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * WebSocket服务
+ */
+@Component
+@ServerEndpoint("/ws/{sid}")
+public class WebSocketServer {
+
+    //存放会话对象
+    private static Map<String, Session> sessionMap = new HashMap();
+
+    /**
+     * 连接建立成功调用的方法
+     */
+    @OnOpen
+    public void onOpen(Session session, @PathParam("sid") String sid) {
+        System.out.println("客户端：" + sid + "建立连接");
+        sessionMap.put(sid, session);
+    }
+
+    /**
+     * 收到客户端消息后调用的方法
+     *
+     * @param message 客户端发送过来的消息
+     */
+    @OnMessage
+    public void onMessage(String message, @PathParam("sid") String sid) {
+        System.out.println("收到来自客户端：" + sid + "的信息:" + message);
+    }
+
+    /**
+     * 连接关闭调用的方法
+     *
+     * @param sid
+     */
+    @OnClose
+    public void onClose(@PathParam("sid") String sid) {
+        System.out.println("连接断开:" + sid);
+        sessionMap.remove(sid);
+    }
+
+    /**
+     * 群发
+     *
+     * @param message
+     */
+    public void sendToAllClient(String message) {
+        Collection<Session> sessions = sessionMap.values();
+        for (Session session : sessions) {
+            try {
+                //服务器向客户端发送消息
+                session.getBasicRemote().sendText(message);
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+    }
+
+}
+```
+
+步骤三：来单提醒代码
+
+```java
+	@Autowired
+    private WebSocketServer webSocketServer;
+	/**
+     * 支付成功，修改订单状态
+     *
+     * @param outTradeNo
+     */
+    public void paySuccess(String outTradeNo) {
+        // 当前登录用户id
+        Long userId = BaseContext.getCurrentId();
+
+        // 根据订单号查询当前用户的订单
+        Orders ordersDB = orderMapper.getByNumberAndUserId(outTradeNo, userId);
+
+        // 根据订单id更新订单的状态、支付方式、支付状态、结账时间
+        Orders orders = Orders.builder()
+                .id(ordersDB.getId())
+                .status(Orders.TO_BE_CONFIRMED)
+                .payStatus(Orders.PAID)
+                .checkoutTime(LocalDateTime.now())
+                .build();
+
+        orderMapper.update(orders);
+		//////////////////////////////////////////////
+        Map map = new HashMap();
+        map.put("type", 1);//消息类型，1表示来单提醒
+        map.put("orderId", orders.getId());
+        map.put("content", "订单号：" + outTradeNo);
+
+        //通过WebSocket实现来单提醒，向客户端浏览器推送消息
+        webSocketServer.sendToAllClient(JSON.toJSONString(map));
+        ///////////////////////////////////////////////////
+    }
+```
 
 
 
